@@ -38,7 +38,8 @@ class Settings(BaseSettings):
     yolo_model: str = os.getenv("YOLO_MODEL", "yolov8n.pt")
     yolo_conf_threshold: float = os.getenv("YOLO_CONF_THRESHOLD", 0.25)
     yolo_dog_class_id: int = os.getenv("YOLO_DOG_CLASS_ID", 16)
-
+    yolo_imgsz: int = int(os.getenv("YOLO_IMGSZ", 1280))
+    
     # Paths
     embeddings_path: Path = Path(os.getenv("EMBEDDINGS_PATH", "data/embeddings.json"))
     data_path: Path = Path(os.getenv("DATA_PATH", "data"))

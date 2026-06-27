@@ -290,7 +290,7 @@ def build_ui() -> gr.Blocks:
 
         with gr.Tab("Busqueda por similitud (Etapa 1)"):
             gr.Markdown("Llama a `POST /upload` y `POST /search`.")
-            search_in = gr.Image(label="Imagen de un perro", type="numpy", height=320)
+            search_in = gr.Image(label="Imagen de un perro", type="numpy", height=320, sources=["upload", "webcam"])
             search_model = gr.Dropdown(
                 choices=MODEL_CHOICES,
                 value=MODEL_CHOICES[0] if MODEL_CHOICES else None,
@@ -307,7 +307,7 @@ def build_ui() -> gr.Blocks:
                 "con el modelo entrenado en la Etapa 2 (reutiliza `classify_detected_dog`, "
                 "por lo que requiere tambien esa funcion de la Etapa 3)."
             )
-            cls_in = gr.Image(label="Imagen de un perro", type="numpy", height=320)
+            cls_in = gr.Image(label="Imagen de un perro", type="numpy", height=320, sources=["upload", "webcam"])
             cls_model = gr.Dropdown(
                 choices=CLASSIFIER_CHOICES,
                 value=CLASSIFIER_CHOICES[0],
@@ -319,7 +319,7 @@ def build_ui() -> gr.Blocks:
 
         with gr.Tab("Deteccion y clasificacion (Etapa 3)"):
             gr.Markdown("Llama a `POST /upload` y `POST /detect`.")
-            det_in = gr.Image(label="Imagen (uno o varios perros)", type="numpy", height=320)
+            det_in = gr.Image(label="Imagen (uno o varios perros)", type="numpy", height=320, sources=["upload", "webcam"])
             det_btn = gr.Button("Detectar y clasificar", variant="primary")
             det_log = gr.Markdown()
             det_quick = gr.Button("Consultar resultado de este job")

@@ -80,6 +80,7 @@ def build_detection(settings: Settings, classifier: ClassifierService) -> Detect
         yolo_model=settings.yolo_model,
         conf_threshold=settings.yolo_conf_threshold,
         dog_class_id=settings.yolo_dog_class_id,
+        imgsz=settings.yolo_imgsz,
     )
 
 

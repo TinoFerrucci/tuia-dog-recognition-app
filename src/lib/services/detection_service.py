@@ -31,11 +31,13 @@ class DetectionService:
         yolo_model: str,
         conf_threshold: float,
         dog_class_id: int,
+        imgsz: int = 1280,
     ) -> None:
         self.classifier = classifier
         self.yolo_model_name = yolo_model
         self.conf_threshold = conf_threshold
         self.dog_class_id = dog_class_id
+        self.imgsz = imgsz
 
     @staticmethod
     def _clip_xyxy(
@@ -65,17 +67,36 @@ class DetectionService:
     def detect_dogs(self, image: np.ndarray) -> list[tuple[tuple[int, int, int, int], float]]:
         """
         Detecta todos los perros presentes en la imagen usando un modelo YOLO
-        pre-entrenado (ej: YOLOv8n via ultralytics). No es necesario entrenar
-        el detector.
-
-        Sugerencias:
-          - self.yolo_model_name, self.conf_threshold y self.dog_class_id
-            (clase 'dog' = 16 en COCO) vienen de la configuracion (.env).
-          - Debe funcionar con un perro, multiples perros y escenas complejas.
-
+        pre-entrenado (YOLOv8n via ultralytics). No es necesario entrenar el detector.
         Retorna una lista de ((x1, y1, x2, y2), confidence) en pixeles.
         """
-        raise NotImplementedError("Etapa 3: implementar detect_dogs")
+        # Carga perezosa: se instancia el modelo una sola vez y se cachea en la
+        # instancia, para no releer los pesos en cada imagen.
+        if getattr(self, "_yolo", None) is None:
+            from ultralytics import YOLO
+
+            self._yolo = YOLO(self.yolo_model_name)
+
+        # ultralytics acepta directamente el array BGR de OpenCV.
+        # Dejamos que YOLO filtre por clase 'dog' y por umbral de confianza.
+        results = self._yolo.predict(
+            source=image,
+            conf=self.conf_threshold,
+            classes=[self.dog_class_id],
+            imgsz=self.imgsz,
+            verbose=False,
+        )
+
+        detections: list[tuple[tuple[int, int, int, int], float]] = []
+        for result in results:
+            for xyxy, conf in zip(result.boxes.xyxy.tolist(), result.boxes.conf.tolist()):
+                x1, y1, x2, y2 = (int(round(v)) for v in xyxy)
+                detections.append(((x1, y1, x2, y2), float(conf)))
+
+        logger.debug("detect_dogs: %d perro(s) detectado(s)", len(detections))
+        return detections
+
+
 
     def classify_detected_dog(self, crop: np.ndarray) -> tuple[str, float]:
         """
@@ -84,7 +105,23 @@ class DetectionService:
 
         El recorte llega en BGR (OpenCV). Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 3: implementar classify_detected_dog")
+        import torch
+
+        clf = self.classifier
+        model = clf.load_model()              # objeto completo (.pth) con .classes adjunto
+        device = clf.device
+        model.to(device).eval()
+
+        # Mismo preprocesamiento que Etapa 1/2 (BGR->RGB, resize, normalizacion ImageNet):
+        # lo reusamos para no introducir train/serve skew.
+        tensor = clf._preprocess_bgr(crop).to(device)
+        with torch.no_grad():
+            logits = model(tensor)            # [1, num_classes]
+            probs = torch.softmax(logits, dim=1)
+            score, idx = probs.max(dim=1)
+
+        breed = model.classes[int(idx)]       # idx -> raza (mapping guardado con el modelo)
+        return breed, float(score)
 
     # ------------------------------------------------------------------
     # Orquestacion provista
