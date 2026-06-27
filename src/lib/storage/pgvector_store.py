@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 
+import numpy as np
 from pgvector.psycopg import register_vector
 from psycopg import connect
 
@@ -121,7 +122,7 @@ class PgVectorEmbeddingStore:
                 ORDER BY embedding <=> %s
                 LIMIT %s
                 """,
-                (query, k),
+                (np.array(query, dtype=np.float32), k),
             )
             rows = cur.fetchall()
         return [self._row_to_record(row) for row in rows]

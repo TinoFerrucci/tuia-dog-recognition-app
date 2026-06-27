@@ -55,6 +55,12 @@ def build_classifier(settings: Settings) -> ClassifierService:
         image_size=settings.image_size,
         dataset_path=settings.dataset_path,
         output_path=settings.output_path,
+        train_epochs=settings.train_epochs,
+        train_batch_size=settings.train_batch_size,
+        train_lr=settings.train_lr,
+        train_lr_step=settings.train_lr_step,
+        train_lr_gamma=settings.train_lr_gamma,
+        train_num_workers=settings.train_num_workers,
     )
 
 

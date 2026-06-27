@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     image_size: int = os.getenv("IMAGE_SIZE", 224)
     embedding_dim: int = os.getenv("EMBEDDING_DIM", 512)
 
+    # Hiperparametros de entrenamiento (Etapa 2)
+    train_epochs: int = int(os.getenv("TRAIN_EPOCHS", 20))
+    train_batch_size: int = int(os.getenv("TRAIN_BATCH_SIZE", 32))
+    train_lr: float = float(os.getenv("TRAIN_LR", 0.001))
+    train_lr_step: int = int(os.getenv("TRAIN_LR_STEP", 7))
+    train_lr_gamma: float = float(os.getenv("TRAIN_LR_GAMMA", 0.1))
+    train_num_workers: int = int(os.getenv("TRAIN_NUM_WORKERS", 2))
+
     # Configuracion de YOLO (Etapa 3)
     yolo_model: str = os.getenv("YOLO_MODEL", "yolov8n.pt")
     yolo_conf_threshold: float = os.getenv("YOLO_CONF_THRESHOLD", 0.25)

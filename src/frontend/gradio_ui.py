@@ -304,7 +304,7 @@ def build_ui() -> gr.Blocks:
         with gr.Tab("Clasificacion supervisada (Etapa 2)"):
             gr.Markdown(
                 "Llama a `POST /upload` y `POST /classify`. Clasifica la imagen completa "
-                "con el modelo entrenado en la Etapa 2 (reutiliza `classify_detected_dog`, "
+                "con el modelo entrenado en la Etapa 2 (reutiliza `classify_detected_dog`", 
                 "por lo que requiere tambien esa funcion de la Etapa 3)."
             )
             cls_in = gr.Image(label="Imagen de un perro", type="numpy", height=320)

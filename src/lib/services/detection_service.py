@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import cv2
 import numpy as np
+import torch
 
 from lib.schemas import ClassifyResult, DetectResult, DogDetection
 from lib.services.classifier_service import ClassifierService
@@ -64,27 +65,48 @@ class DetectionService:
 
     def detect_dogs(self, image: np.ndarray) -> list[tuple[tuple[int, int, int, int], float]]:
         """
-        Detecta todos los perros presentes en la imagen usando un modelo YOLO
-        pre-entrenado (ej: YOLOv8n via ultralytics). No es necesario entrenar
-        el detector.
-
-        Sugerencias:
-          - self.yolo_model_name, self.conf_threshold y self.dog_class_id
-            (clase 'dog' = 16 en COCO) vienen de la configuracion (.env).
-          - Debe funcionar con un perro, multiples perros y escenas complejas.
-
+        Detecta perros en la imagen usando YOLOv8 pre-entrenado en COCO.
+        Filtra solo la clase 'dog' (id=16) y aplica el umbral de confianza.
         Retorna una lista de ((x1, y1, x2, y2), confidence) en pixeles.
         """
-        raise NotImplementedError("Etapa 3: implementar detect_dogs")
+        if not hasattr(self, "_yolo"):
+            from ultralytics import YOLO
+            self._yolo = YOLO(self.yolo_model_name)
+
+        results = self._yolo(image, verbose=False)[0]
+
+        detections = []
+        for box in results.boxes:
+            if int(box.cls) != self.dog_class_id:
+                continue
+            if float(box.conf) < self.conf_threshold:
+                continue
+            x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+            detections.append(((x1, y1, x2, y2), float(box.conf)))
+
+        logger.info("detect_dogs: %d perros detectados", len(detections))
+        return detections
 
     def classify_detected_dog(self, crop: np.ndarray) -> tuple[str, float]:
         """
-        Clasifica la raza del recorte de un perro detectado usando el modelo
-        entrenado en la Etapa 2 (self.classifier.load_model()).
-
+        Clasifica la raza del recorte usando el modelo entrenado en Etapa 2.
         El recorte llega en BGR (OpenCV). Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 3: implementar classify_detected_dog")
+        checkpoint = self.classifier.load_model()
+        model = checkpoint["model"]
+        classes = checkpoint["classes"]
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model.eval().to(device)
+
+        tensor = self.classifier._image_to_tensor(crop).to(device)
+        with torch.no_grad():
+            probs = torch.softmax(model(tensor), dim=1)
+            top1 = probs.topk(1)
+
+        breed = classes[top1.indices[0][0].item()]
+        score = top1.values[0][0].item()
+        return breed, score
 
     # ------------------------------------------------------------------
     # Orquestacion provista

@@ -8,7 +8,7 @@ output/*
 src/output/
 models/*
 !models/.gitkeep
-*.pth
+!models/*.pth
 *.pt
 *.onnx
 *.engine
@@ -16,3 +16,4 @@ data/dataset/*
 !data/dataset/.gitkeep
 runs/
 .DS_Store
+/eval_independiente

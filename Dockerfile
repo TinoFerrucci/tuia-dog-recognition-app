@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY ./src /app
+COPY ./scripts /app/scripts
 COPY ./.env.docker.example /app/.env
 
 EXPOSE 8000
