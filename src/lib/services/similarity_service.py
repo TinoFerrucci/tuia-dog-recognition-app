@@ -14,6 +14,11 @@ from lib.storage.base import EmbeddingStoreProtocol
 
 logger = logging.getLogger(__name__)
 
+# Cache lazy del modelo baseline (ResNet50 sin FC). Se instancia una sola vez
+# por proceso y se comparte entre todas las llamadas a extract_embedding.
+_BASELINE_MODEL = None
+_BASELINE_DEVICE = None
+
 
 class SimilarityService:
     """Etapa 1: buscador de imagenes por similitud.
@@ -59,39 +64,87 @@ class SimilarityService:
     def extract_embedding(self, image: np.ndarray) -> list[float]:
         """
         Genera el embedding de una imagen usando un modelo pre-entrenado en
-        ImageNet (ej: ResNet50, EfficientNet, ConvNeXt) sin la capa de
-        clasificacion final.
+        ImageNet (ResNet50) sin la capa de clasificacion final.
 
-        Sugerencias:
-          - Preprocesar la imagen (resize a self.image_size, normalizacion ImageNet).
-          - Usar torchvision.models o timm con pesos pre-entrenados.
-          - Recordar que la imagen llega en BGR (OpenCV).
-        Retorna una lista de floats de dimension EMBEDDING_DIM.
+        Preprocesa la imagen (BGR OpenCV -> RGB, resize a self.image_size,
+        normalizacion ImageNet) y devuelve el vector de la capa de pooling
+        final (2048-d para ResNet50).
         """
-        raise NotImplementedError("Etapa 1: implementar extract_embedding")
+        global _BASELINE_MODEL, _BASELINE_DEVICE
+        if _BASELINE_MODEL is None:
+            import torch
+            from torchvision import models
+
+            _BASELINE_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            weights = models.ResNet50_Weights.IMAGENET1K_V2
+            backbone = models.resnet50(weights=weights)
+            backbone.fc = torch.nn.Identity()
+            backbone.eval().to(_BASELINE_DEVICE)
+            _BASELINE_MODEL = (backbone, weights.transforms())
+            logger.info("Baseline ResNet50 loaded on %s (2048-d)", _BASELINE_DEVICE)
+
+        import torch
+
+        backbone, preprocess = _BASELINE_MODEL
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_like = _cv2_to_pil(rgb)
+        tensor = preprocess(pil_like).unsqueeze(0).to(_BASELINE_DEVICE)
+        with torch.no_grad():
+            embedding = backbone(tensor).squeeze(0).cpu().numpy().astype(np.float32)
+        return embedding.tolist()
 
     def search_similar_images(self, embedding: list[float], top_k: int) -> list[Neighbor]:
         """
         Recupera de la base vectorial las top_k imagenes mas similares.
 
-        Sugerencias:
-          - Con pgvector: self.store.search(embedding, top_k).
-          - Con JSON: iterar self.store.all() y usar self.similarity(...).
-          - Respetar SIMILARITY_METRIC (cosine | l2).
+        Con pgvector usa self.store.search (distancia coseno <=>) cuando la
+        metrica es 'cosine'; en cualquier otro caso (JSON store o metrica l2)
+        itera self.store.all() y calcula self.similarity() por pares.
         Retorna una lista de Neighbor (path, breed, score) ordenada por score
         descendente.
         """
-        raise NotImplementedError("Etapa 1: implementar search_similar_images")
+        metric = self.similarity_metric.lower()
+        store_search = getattr(self.store, "search", None)
+
+        if store_search is not None and metric == "cosine":
+            # pgvector requiere un numpy.ndarray (el dumper de register_vector lo
+            # convierte a tipo `vector`); una list[float] se envia como
+            # `double precision[]` y el operador `<=>` no resuelve (no hay cast
+            # implicito para operadores, solo para INSERT).
+            query_arr = np.asarray(embedding, dtype=np.float32)
+            records = store_search(query_arr, top_k)
+            neighbors: list[Neighbor] = []
+            for rec in records:
+                score = self._cosine(np.asarray(embedding, dtype=np.float32), np.asarray(rec.embedding, dtype=np.float32))
+                neighbors.append(Neighbor(path=rec.path, breed=rec.breed, score=float(score)))
+            neighbors.sort(key=lambda n: n.score, reverse=True)
+            return neighbors
+
+        records = self.store.all()
+        scored: list[tuple[float, EmbeddingRecord]] = []
+        for rec in records:
+            score = self.similarity(embedding, rec.embedding)
+            scored.append((score, rec))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [Neighbor(path=rec.path, breed=rec.breed, score=float(score)) for score, rec in scored[:top_k]]
 
     def predict_breed_from_neighbors(self, results: list[Neighbor]) -> tuple[str, float]:
         """
-        Predice la raza a partir de los vecinos recuperados (ej: voto
-        mayoritario, opcionalmente ponderado por score).
-
-        Si el mejor score esta por debajo de self.similarity_threshold se
-        considera "unknown". Retorna (raza, score).
+        Predice la raza a partir de los vecinos recuperados mediante voto
+        mayoritario ponderado por score. Si no hay vecinos o el mejor score
+        esta por debajo de self.similarity_threshold se considera "unknown".
+        Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 1: implementar predict_breed_from_neighbors")
+        if not results:
+            return "unknown", 0.0
+        best_score = max(n.score for n in results)
+        if best_score < self.similarity_threshold:
+            return "unknown", float(best_score)
+        weights: dict[str, float] = {}
+        for n in results:
+            weights[n.breed] = weights.get(n.breed, 0.0) + float(n.score)
+        breed = max(weights, key=weights.get)
+        return breed, float(best_score)
 
     # ------------------------------------------------------------------
     # Helpers de similitud provistos
@@ -176,3 +229,10 @@ class SimilarityService:
             encoding="utf-8",
         )
         return str(result_file)
+
+
+def _cv2_to_pil(rgb: np.ndarray):
+    """Convierte una imagen RGB (numpy uint8 HxWxC) a PIL.Image."""
+    from PIL import Image
+
+    return Image.fromarray(rgb.astype(np.uint8))

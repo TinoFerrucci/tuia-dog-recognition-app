@@ -1,0 +1,10 @@
+{
+  "n_samples": 350,
+  "embedding_dim": 2048,
+  "n_breeds": 70,
+  "pca_explained_variance": [
+    0.05663871392607689,
+    0.04307783022522926
+  ],
+  "model": "baseline"
+}

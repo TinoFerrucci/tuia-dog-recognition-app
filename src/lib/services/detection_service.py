@@ -13,6 +13,9 @@ from lib.services.classifier_service import ClassifierService
 
 logger = logging.getLogger(__name__)
 
+# Cache lazy del modelo YOLO (se descarga automaticamente la primera vez).
+_YOLO_MODELS: dict[str, object] = {}
+
 
 class DetectionService:
     """Etapa 3: pipeline de deteccion y clasificacion.
@@ -65,17 +68,39 @@ class DetectionService:
     def detect_dogs(self, image: np.ndarray) -> list[tuple[tuple[int, int, int, int], float]]:
         """
         Detecta todos los perros presentes en la imagen usando un modelo YOLO
-        pre-entrenado (ej: YOLOv8n via ultralytics). No es necesario entrenar
+        pre-entrenado (YOLOv8n via ultralytics). No es necesario entrenar
         el detector.
 
-        Sugerencias:
-          - self.yolo_model_name, self.conf_threshold y self.dog_class_id
-            (clase 'dog' = 16 en COCO) vienen de la configuracion (.env).
-          - Debe funcionar con un perro, multiples perros y escenas complejas.
+        Filtra por la clase 'dog' (self.dog_class_id = 16 en COCO) y por
+        self.conf_threshold. Funciona con uno, multiples perros y escenas
+        complejas con otros objetos.
 
         Retorna una lista de ((x1, y1, x2, y2), confidence) en pixeles.
         """
-        raise NotImplementedError("Etapa 3: implementar detect_dogs")
+        from ultralytics import YOLO
+
+        model = _YOLO_MODELS.get(self.yolo_model_name)
+        if model is None:
+            model = YOLO(self.yolo_model_name)
+            _YOLO_MODELS[self.yolo_model_name] = model
+            logger.info("YOLO loaded: %s", self.yolo_model_name)
+
+        results = model.predict(image, conf=self.conf_threshold, verbose=False)
+        detections: list[tuple[tuple[int, int, int, int], float]] = []
+        for r in results:
+            boxes = r.boxes
+            if boxes is None:
+                continue
+            cls_ids = boxes.cls.cpu().numpy().astype(int)
+            confs = boxes.conf.cpu().numpy()
+            xyxy = boxes.xyxy.cpu().numpy()
+            for i, cls_id in enumerate(cls_ids):
+                if int(cls_id) != int(self.dog_class_id):
+                    continue
+                x1, y1, x2, y2 = (int(v) for v in xyxy[i])
+                detections.append(((x1, y1, x2, y2), float(confs[i])))
+        logger.info("Detected %d dog(s) in image", len(detections))
+        return detections
 
     def classify_detected_dog(self, crop: np.ndarray) -> tuple[str, float]:
         """
@@ -84,7 +109,34 @@ class DetectionService:
 
         El recorte llega en BGR (OpenCV). Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 3: implementar classify_detected_dog")
+        import torch
+        from torchvision import transforms
+
+        if crop is None or crop.size == 0:
+            return "unknown", 0.0
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model, classes = self.classifier._load_classifier_model()
+        model = model.to(device).eval()
+
+        rgb = crop[..., ::-1].copy() if crop.ndim == 3 else crop
+        from PIL import Image
+
+        pil = Image.fromarray(rgb.astype(np.uint8))
+        tf = transforms.Compose(
+            [
+                transforms.Resize((self.classifier.image_size, self.classifier.image_size)),
+                transforms.ToTensor(),
+                transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+            ]
+        )
+        tensor = tf(pil).unsqueeze(0).to(device)
+        with torch.no_grad():
+            logits = model(tensor)
+            probs = torch.softmax(logits, dim=1)
+            conf, idx = probs.max(dim=1)
+        breed = classes[int(idx.cpu().item())] if classes else "unknown"
+        return breed, float(conf.cpu().item())
 
     # ------------------------------------------------------------------
     # Orquestacion provista
