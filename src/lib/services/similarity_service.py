@@ -9,6 +9,17 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
+import torch
+from torchvision import models, transforms
+from PIL import Image
+from collections import defaultdict
+
+import os
+import psycopg2
+from pgvector.psycopg2 import register_vector
+from uuid import uuid4
+from psycopg2.extras import execute_values
+
 from lib.schemas import EmbeddingRecord, Neighbor, SearchResult
 from lib.storage.base import EmbeddingStoreProtocol
 
@@ -45,6 +56,23 @@ class SimilarityService:
         self.model_name = model_name
         self.url_resolver = url_resolver
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.preprocess = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.CenterCrop(self.image_size),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406], 
+                std=[0.229, 0.224, 0.225]
+            )
+        ])
+        
+        self.base_model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
+        self.model = torch.nn.Sequential(*list(self.base_model.children())[:-1])
+        self.model = self.model.to(self.device)
+        self.model.eval()
+
     def _load_image(self, source_path: str) -> np.ndarray:
         image = cv2.imread(str(source_path))
         if image is None:
@@ -68,8 +96,18 @@ class SimilarityService:
           - Recordar que la imagen llega en BGR (OpenCV).
         Retorna una lista de floats de dimension EMBEDDING_DIM.
         """
-        raise NotImplementedError("Etapa 1: implementar extract_embedding")
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(image_rgb)
+        tensor_img = self.preprocess(pil_img).unsqueeze(0).to(self.device)
 
+        with torch.no_grad():
+            output = self.model(tensor_img)
+            embedding_tensor = torch.flatten(output).cpu()
+            embedding_list = embedding_tensor.numpy().tolist()
+
+        return embedding_list
+
+            
     def search_similar_images(self, embedding: list[float], top_k: int) -> list[Neighbor]:
         """
         Recupera de la base vectorial las top_k imagenes mas similares.
@@ -81,7 +119,34 @@ class SimilarityService:
         Retorna una lista de Neighbor (path, breed, score) ordenada por score
         descendente.
         """
-        raise NotImplementedError("Etapa 1: implementar search_similar_images")
+        print(f"[DEBUG] Store tiene {len(list(self.store.all()))} registros") 
+        try:
+            raw_results = self.store.search(embedding, top_k)
+        except Exception:
+            embedding_numpy = np.array(embedding, dtype=np.float32)
+            raw_results = self.store.search(embedding_numpy, top_k)
+        
+        if not raw_results:
+            return []
+        
+        neighbors = []
+        for item in raw_results:
+            # Acceso defensivo según tipo del item
+            if isinstance(item, dict):
+                path = item['path']
+                breed = item['breed']
+                ref_emb = item.get('embedding', [])
+            else:
+                path = getattr(item, 'path', '')
+                breed = getattr(item, 'breed', '')
+                ref_emb = getattr(item, 'embedding', [])
+            
+            score = self.similarity(embedding, ref_emb) if ref_emb else 0.0
+            neighbors.append(Neighbor(path=path, breed=breed, score=score))
+        
+        neighbors.sort(key=lambda x: x.score, reverse=True)
+        return neighbors
+
 
     def predict_breed_from_neighbors(self, results: list[Neighbor]) -> tuple[str, float]:
         """
@@ -91,7 +156,35 @@ class SimilarityService:
         Si el mejor score esta por debajo de self.similarity_threshold se
         considera "unknown". Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 1: implementar predict_breed_from_neighbors")
+
+        if not results:
+            return "unknown", 0.0
+
+        best_score = results[0].score
+        threshold = getattr(self, "similarity_threshold", 0.0)
+        is_cosine = (getattr(self, "similarity_metric", "cosine") == "cosine")
+
+        if is_cosine:
+            if best_score < threshold:
+                return "unknown", float(best_score)
+        else:
+            if best_score > threshold:
+                return "unknown", float(best_score)
+
+        breed_votes = defaultdict(float)
+        
+        for neighbor in results:
+            if is_cosine:
+                weight = neighbor.score
+            else:
+                weight = 1.0 / (neighbor.score + 1e-5)
+                
+            breed_votes[neighbor.breed] += weight
+
+
+        predicted_breed = max(breed_votes, key=breed_votes.get)
+
+        return predicted_breed, float(best_score)
 
     # ------------------------------------------------------------------
     # Helpers de similitud provistos
