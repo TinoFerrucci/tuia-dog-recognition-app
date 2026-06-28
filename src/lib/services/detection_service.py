@@ -4,13 +4,13 @@ import json
 import logging
 from pathlib import Path
 from uuid import uuid4
-
+import torch
+import torchvision.transforms as T
+from PIL import Image
 import cv2
 import numpy as np
-
 from lib.schemas import ClassifyResult, DetectResult, DogDetection
 from lib.services.classifier_service import ClassifierService
-
 logger = logging.getLogger(__name__)
 
 
@@ -75,7 +75,18 @@ class DetectionService:
 
         Retorna una lista de ((x1, y1, x2, y2), confidence) en pixeles.
         """
-        raise NotImplementedError("Etapa 3: implementar detect_dogs")
+        from ultralytics import YOLO
+        model = YOLO(self.yolo_model_name)
+        results = model(image, conf=self.conf_threshold, verbose=False)[0]
+        detections = []
+        for box in results.boxes:
+            cls_id = int(box.cls[0].item())
+            if cls_id != self.dog_class_id:
+                continue
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            conf = float(box.conf[0].item())
+            detections.append(((int(x1), int(y1), int(x2), int(y2)), conf))
+        return detections
 
     def classify_detected_dog(self, crop: np.ndarray) -> tuple[str, float]:
         """
@@ -84,7 +95,29 @@ class DetectionService:
 
         El recorte llega en BGR (OpenCV). Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 3: implementar classify_detected_dog")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        tfm = T.Compose([
+            T.Resize(256),
+            T.CenterCrop(224),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        modelo = self.classifier.load_model()
+        modelo.eval().to(device)
+        image_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(image_rgb)
+        tensor = tfm(pil_img).unsqueeze(0).to(device)
+        with torch.no_grad():
+            logits = modelo(tensor)
+            probs = torch.softmax(logits, dim=1)
+            pred_idx = probs.argmax(1).item()
+            score = probs[0, pred_idx].item()
+        # nombre de la raza desde el dataset
+        import torchvision.datasets as datasets
+        train_ds = datasets.ImageFolder(str(self.classifier.dataset_path / "train"))
+        breed = train_ds.classes[pred_idx]
+
+        return (breed, score)
 
     # ------------------------------------------------------------------
     # Orquestacion provista
