@@ -10,6 +10,13 @@ import numpy as np
 
 from lib.schemas import ClassifyResult, DetectResult, DogDetection
 from lib.services.classifier_service import ClassifierService
+from ultralytics import YOLO
+
+import torch
+import torch.nn.functional as F
+import torchvision.transforms as transforms
+from PIL import Image
+
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +43,7 @@ class DetectionService:
         self.yolo_model_name = yolo_model
         self.conf_threshold = conf_threshold
         self.dog_class_id = dog_class_id
+        self.model = YOLO(self.yolo_model_name)
 
     @staticmethod
     def _clip_xyxy(
@@ -75,7 +83,25 @@ class DetectionService:
 
         Retorna una lista de ((x1, y1, x2, y2), confidence) en pixeles.
         """
-        raise NotImplementedError("Etapa 3: implementar detect_dogs")
+        results = self.model(image, conf=self.conf_threshold, verbose=False)
+        detecciones_perros = []
+        
+        if results and len(results) > 0:
+            print(f"DEBUG YOLO: Encontró {len(results[0].boxes)} objetos en total.")
+            for box in results[0].boxes:
+                class_id = int(box.cls[0].item())
+                
+                if class_id == self.dog_class_id: 
+                    coords = box.xyxy[0].tolist()
+                    x1 = int(round(coords[0]))
+                    y1 = int(round(coords[1]))
+                    x2 = int(round(coords[2]))
+                    y2 = int(round(coords[3]))
+                    
+                    confidence = float(box.conf[0].item())
+                    detecciones_perros.append(((x1, y1, x2, y2), confidence))
+        print(f"DEBUG FILTRO: La lista final que devuelve la función tiene {len(detecciones_perros)} perro(s).")
+        return detecciones_perros
 
     def classify_detected_dog(self, crop: np.ndarray) -> tuple[str, float]:
         """
@@ -84,7 +110,49 @@ class DetectionService:
 
         El recorte llega en BGR (OpenCV). Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 3: implementar classify_detected_dog")
+        # Convertir BGR (OpenCV) a RGB y luego a formato imagen (PIL)
+        crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(crop_rgb)
+
+        # Aplicar las mismas transformaciones estrictas de validación/test
+        transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Añadimos la dimensión de batch que PyTorch necesita: [1, 3, 224, 224]
+        input_tensor = transform(pil_img).unsqueeze(0) 
+
+        
+        model = self.classifier.load_model()
+        device = next(model.parameters()).device 
+        input_tensor = input_tensor.to(device)
+        
+        model.eval()
+
+        #  Pasar por la red neuronal
+        with torch.no_grad():
+            output = model(input_tensor)
+            # Pasamos la salida lineal por una función softmax para obtener porcentajes reales (0 a 1)
+            probs = F.softmax(output, dim=1)
+            score_tensor, pred_tensor = torch.max(probs, dim=1)
+            
+        score = float(score_tensor.item())
+        pred_id = int(pred_tensor.item())
+
+        # Leemos directamente las carpetas de entrenamiento y las ordenamos alfabéticamente
+        import os
+        ruta_dataset = "data/dataset/train" 
+        
+        try:
+            nombres_de_clases = sorted([d for d in os.listdir(ruta_dataset) if os.path.isdir(os.path.join(ruta_dataset, d))])
+            breed = nombres_de_clases[pred_id]
+        except FileNotFoundError:
+            breed = f"raza_id_{pred_id}"
+            
+        return breed, score
+ 
 
     # ------------------------------------------------------------------
     # Orquestacion provista

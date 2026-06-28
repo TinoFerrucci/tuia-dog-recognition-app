@@ -8,8 +8,9 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./.env.docker.example:/app/.env
+      - ./.env.docker:/app/.env 
       - ./src:/app
+      - ./scripts:/app/scripts
       - ./models:/app/models
       - ./output:/app/output
       - ./data:/app/data

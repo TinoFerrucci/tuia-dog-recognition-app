@@ -13,6 +13,12 @@ models/*
 *.onnx
 *.engine
 data/dataset/*
+data/conjunto_independiente_val/*
 !data/dataset/.gitkeep
+!data/conjunto_independiente_val/.gitkeep
 runs/
 .DS_Store
+*.json
+data/*.json
+data/embeddings.json
+

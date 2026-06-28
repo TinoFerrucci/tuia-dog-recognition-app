@@ -9,6 +9,10 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
+import torch
+import torchvision.models as models
+import torchvision.transforms as transforms
+
 from lib.schemas import EmbeddingRecord, Neighbor, SearchResult
 from lib.storage.base import EmbeddingStoreProtocol
 
@@ -45,6 +49,13 @@ class SimilarityService:
         self.model_name = model_name
         self.url_resolver = url_resolver
 
+        if self.model_name == "baseline":
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+            self.model.fc = torch.nn.Identity()  # Reemplazamos la última capa lineal de clasificación (.fc) por Identity
+            self.model.to(self.device) 
+            self.model.eval()
+
     def _load_image(self, source_path: str) -> np.ndarray:
         image = cv2.imread(str(source_path))
         if image is None:
@@ -59,7 +70,7 @@ class SimilarityService:
     def extract_embedding(self, image: np.ndarray) -> list[float]:
         """
         Genera el embedding de una imagen usando un modelo pre-entrenado en
-        ImageNet (ej: ResNet50, EfficientNet, ConvNeXt) sin la capa de
+        ImageNet (ej: ResNet18, EfficientNet, ConvNeXt) sin la capa de
         clasificacion final.
 
         Sugerencias:
@@ -68,7 +79,26 @@ class SimilarityService:
           - Recordar que la imagen llega en BGR (OpenCV).
         Retorna una lista de floats de dimension EMBEDDING_DIM.
         """
-        raise NotImplementedError("Etapa 1: implementar extract_embedding")
+        transform_etapa1 = transforms.Compose([
+            transforms.ToPILImage(), # Agregamos esto solo para que acepte el array de OpenCV
+            # Redimensionar la imagen en 224 x 224
+            transforms.Resize((224, 224)),                         
+            # Conversión a Tensor (convierte los píxeles de 0-255 a un rango de 0-1)
+            transforms.ToTensor(),                                 
+            # Normalización (media y desviación estándar)
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)                # Convertimos de BGR a RGB 
+        tensor_image = transform_etapa1(image_rgb)                        # Aplicamos las transformaciones
+        tensor_image = tensor_image.unsqueeze(0).to(self.device)          # agrega una dimensión extra de tamaño 1 en la posición 0
+
+        # Extracción sin instanciar el modelo cada vez
+        with torch.no_grad():
+            output = self.model(tensor_image)
+            embedding_np = output.squeeze().cpu().numpy()
+            embedding_list = embedding_np.tolist()
+
+        return embedding_list
 
     def search_similar_images(self, embedding: list[float], top_k: int) -> list[Neighbor]:
         """
@@ -81,7 +111,26 @@ class SimilarityService:
         Retorna una lista de Neighbor (path, breed, score) ordenada por score
         descendente.
         """
-        raise NotImplementedError("Etapa 1: implementar search_similar_images")
+        # Si la base soporta búsqueda nativa (pgvector), usamos su método optimizado
+        if hasattr(self.store, "search"): # O evaluar cómo se expone el store
+            try:
+                return self.store.search(embedding, top_k)
+            except NotImplementedError:
+                pass
+
+        # Fallback para el JSON plano: iteramos sobre todos los registros y calculamos similitud manualmente
+        raw_results = []
+        for record in self.store.all():
+            score = self.similarity(embedding, record.embedding)
+            neighbor_record = Neighbor(
+                path=str(record.path),
+                breed=str(record.breed),
+                score=float(score)
+            )
+            raw_results.append(neighbor_record)
+            
+        raw_results.sort(key=lambda x: x.score, reverse=True)
+        return raw_results[:top_k]
 
     def predict_breed_from_neighbors(self, results: list[Neighbor]) -> tuple[str, float]:
         """
@@ -91,7 +140,32 @@ class SimilarityService:
         Si el mejor score esta por debajo de self.similarity_threshold se
         considera "unknown". Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 1: implementar predict_breed_from_neighbors")
+        if not results:
+            return "unknown", 0.0
+            
+        # Como results ya viene ordenado de forma descendente, el primer índice tiene el mayor score
+        mejor_score = results[0].score
+        
+        if mejor_score < self.similarity_threshold:
+            return "unknown", 0.0
+
+        # Implementación del algoritmo k-NN con Voto Ponderado
+        votos_por_raza = {}
+        
+        for vecino in results:
+            raza = vecino.breed
+            score = vecino.score  # Notación de objeto para clases
+            
+            # Acumulamos la similitud como el "peso" del voto
+            if raza in votos_por_raza:
+                votos_por_raza[raza] += score
+            else:
+                votos_por_raza[raza] = score
+                
+        # Extraemos la clave con el valor de ponderación más alto
+        raza_ganadora = max(votos_por_raza, key=votos_por_raza.get)
+        
+        return raza_ganadora, mejor_score
 
     # ------------------------------------------------------------------
     # Helpers de similitud provistos
