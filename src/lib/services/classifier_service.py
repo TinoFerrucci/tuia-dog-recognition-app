@@ -145,6 +145,7 @@ class ClassifierService:
         patience: int = 5,
         weight_decay: float = 1e-4,
         dropout_p: float = 0.4,
+        scheduler_patience: int = 2,
     ) -> dict:
         """
         Entrena el clasificador de razas sobre el dataset (self.dataset_path).
@@ -227,7 +228,7 @@ class ClassifierService:
         # Optimizador y Función de Pérdida
         criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=2, verbose=True)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=scheduler_patience)
 
         # Bucle de Entrenamiento
         best_acc = 0.0
